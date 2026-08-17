@@ -1,0 +1,56 @@
+{
+  "name": "@ecosyste-ms/ecosystems-ts",
+  "version": "0.1.0",
+  "description": "TypeScript client library for the ecosyste.ms APIs",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "FOLLOWUPS.md"
+  ],
+  "scripts": {
+    "sync-specs": "node scripts/sync-specs.mjs",
+    "generate": "node scripts/generate.mjs",
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\"",
+    "lint": "biome check . && tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "prepublishOnly": "npm run build",
+    "format": "biome check . --write",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "openapi-fetch": "^0.17.0",
+    "packageurl-js": "^2.0.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.5.8",
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "yaml": "^2.9.0"
+  },
+  "keywords": [
+    "ecosyste.ms",
+    "purl",
+    "package-url",
+    "sbom",
+    "openapi",
+    "packages",
+    "advisories"
+  ]
+}

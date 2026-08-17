@@ -1,0 +1,51 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:best-practices",
+    "schedule:weekly",
+    "helpers:pinGitHubActionDigestsToSemver"
+  ],
+  "customManagers": [
+    {
+      "description": "The code generator is not a dependency of this package -- it runs from a pinned npx install in scripts/generate.mjs. Track those two pins here so they cannot silently rot.",
+      "customType": "regex",
+      "managerFilePatterns": ["/^scripts/generate\\.mjs$/"],
+      "matchStrings": [
+        "const GENERATOR = \"(?<depName>[^@\"]+)@(?<currentValue>[^\"]+)\"",
+        "const GENERATOR_TYPESCRIPT = \"(?<depName>[^@\"]+)@(?<currentValue>[^\"]+)\""
+      ],
+      "datasourceTemplate": "npm"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["npm"],
+      "prConcurrentLimit": 10
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "prConcurrentLimit": 5
+    },
+    {
+      "description": "Regenerate types after updates to openapi-typescript",
+      "matchDepNames": ["openapi-typescript"],
+      "postUpgradeTasks": {
+        "commands": ["npm run generate"],
+        "fileFilters": ["src/generated/**"],
+        "executionMode": "update"
+      }
+    },
+    {
+      "description": "Keep the generator on typescript@5: openapi-typescript emits through the TypeScript compiler API, which typescript@7 does not ship. Drop this rule when openapi-typescript supports 7.",
+      "matchManagers": ["custom.regex"],
+      "matchDepNames": ["typescript"],
+      "allowedVersions": "<6"
+    },
+    {
+      "description": "Use `feat` for openapi-typescript minor bumps",
+      "matchDepNames": ["openapi-typescript"],
+      "matchUpdateTypes": ["minor"],
+      "semanticCommitType": "feat"
+    }
+  ]
+}

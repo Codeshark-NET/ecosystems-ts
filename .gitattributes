@@ -1,0 +1,7 @@
+# Vendored specs and generated types are written with LF by the sync/generate scripts.
+# Without this, a checkout with core.autocrlf=true rewrites them to CRLF and the
+# "generated files are up-to-date" CI job fails on Windows for no real reason.
+* text=auto eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.ts text eol=lf

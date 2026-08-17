@@ -1,0 +1,44 @@
+name: Sync OpenAPI specs
+
+# The ecosyste.ms specs are fetched from raw.githubusercontent.com rather than tracked by
+# a Renovate datasource, so the weekly refresh lives here instead of in renovate.json.
+# ecosyste-ms/ecosystems-go does the same thing with vendir + a Renovate lockFileMaintenance
+# rule; this is the npm-shaped equivalent.
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      # Spec change and regenerated types land in the same commit, never separately.
+      - run: npm run sync-specs
+      - run: npm run generate
+      - run: npm test
+
+      - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          branch: chore/sync-openapi-specs
+          title: 'chore(deps): update vendored OpenAPI specs'
+          commit-message: 'chore(deps): update vendored OpenAPI specs'
+          body: |
+            Automated weekly sync of the ecosyste.ms OpenAPI specs.
+
+            `specs/.lock.json` records a sha256 per spec, so the diff there tells you
+            which upstream services actually changed.
+          labels: dependencies
