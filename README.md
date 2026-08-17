@@ -3,8 +3,8 @@
 TypeScript client library for the [ecosyste.ms](https://ecosyste.ms) APIs. See the
 [API documentation](https://ecosyste.ms/api) for details.
 
-A port of [ecosystems-go](https://github.com/ecosyste-ms/ecosystems-go), following the
-same design decisions wherever they translate. Two runtime dependencies:
+A port of [ecosystems-go](https://github.com/ecosyste-ms/ecosystems-go). Two runtime
+dependencies:
 [`openapi-fetch`](https://openapi-ts.dev/openapi-fetch/) (6 kB) and
 [`packageurl-js`](https://github.com/package-url/packageurl-js).
 
@@ -47,6 +47,14 @@ console.log(`rake 13.0.0 integrity: ${version?.integrity}`);
 const versions = await client.getAllVersions("rubygems.org", "rake");
 console.log(`rake has ${versions.length} versions`);
 ```
+
+`lookup` is the single-package counterpart to `bulkLookup`: same PURL vocabulary, one
+request, one package. It takes a PURL string; `lookupPurl` takes a parsed `PackageURL`
+(see [PURL Helpers](#purl-helpers)).
+
+`bulkLookup` chunks its input at `batchSize` and sends the batches one after another, so
+5,000 PURLs is 50 round-trips. A batch that fails fails the whole call — there are no
+partial results today, so keep an eye on the size of what you hand it.
 
 Lookups that find nothing return `null` (or `[]` for lists) rather than throwing — "not
 found" is a normal outcome for a lookup API, not an exception.
@@ -122,20 +130,19 @@ so a truncated stream can never be mistaken for a complete one.
 const client = new EcosystemsClient({
   userAgent: "my-app/1.0",       // required
   from: "you@example.com",       // From header - see Rate limits below
-  apiKey: "your-api-key",        // Authorization: Bearer
+  apiKey: "your-api-key",        // Authorization: Bearer - see Rate limits below
   batchSize: 50,                 // PURLs per bulk lookup request (max 100)
   timeoutMs: 30_000,             // deadline per HTTP request, including its retries
   maxPages: 20,                  // page ceiling for any one paginating call
   retry: { attempts: 3 },        // or `false` to disable
   fetch: myFetch,                // custom fetch (proxies, agents, tests)
-  servers: {                     // per-service base URL overrides
-    packages: "https://custom.packages.server",
-  },
+  servers: {                     // per-service base URL overrides; any of
+    packages: "https://custom.packages.server",  // packages, repos, advisories,
+  },                                             // commits, issues
 });
 ```
 
-Every method takes an optional trailing `{ signal }` for cancellation — the analogue of
-Go's `context.Context`.
+Every method takes an optional trailing `{ signal }` for cancellation.
 
 ```ts
 const controller = new AbortController();
@@ -144,8 +151,7 @@ const pkg = await client.lookup("pkg:gem/rake", { signal: controller.signal });
 
 `timeoutMs` covers one HTTP request and its retries, so every bulk batch and every
 followed page gets its own budget. For a deadline over a whole operation — 50 batches of
-a large `bulkLookup`, say — pass your own signal, which is what a Go caller does with
-`context.WithTimeout`:
+a large `bulkLookup`, say — pass your own signal:
 
 ```ts
 await client.bulkLookup(purls, { signal: AbortSignal.timeout(120_000) });
@@ -170,13 +176,30 @@ header. The User-Agent is what does the work. Measured 2026-08-16, every sample 
 | email in the User-Agent | `polite` | 15000/hr |
 | `?mailto=` query parameter | `polite` | 15000/hr |
 
-The `From` header alone does nothing, which is worth knowing if you are porting from
-ecosystems-go — that library identifies with `From` only, so it runs in the anonymous
-pool. We send it anyway as the polite HTTP convention, but never rely on it.
+The `From` header alone does nothing. We send it as the polite HTTP convention, but never
+rely on it — put the email in the User-Agent, which is what `from` does for you.
 
 `?mailto=` works too and is deliberately not used: the CDN sends `Vary: Origin` only, so
 a query parameter gives every email its own cache entry and fragments the shared cache.
 Identifying through the User-Agent costs nothing.
+
+### API keys
+
+If you have been issued a key, pass it as `apiKey` and it is sent as
+`Authorization: Bearer <key>` on every request, across all five services:
+
+```ts
+new EcosystemsClient({ userAgent: "my-app/1.0", apiKey: process.env.ECOSYSTEMS_API_KEY });
+```
+
+Keys are not part of the public ecosyste.ms flow — there is no self-serve signup and the
+OpenAPI specs do not describe the scheme — so this is here for hosted or sponsor
+deployments that do issue one, and for self-hosted instances behind a gateway. The tiers
+measured above are the ones an anonymous or polite caller sees; a key's quota is whatever
+the issuing deployment sets. Identify through the User-Agent as well either way — it costs
+nothing and is what earns the polite pool when no key is in play.
+
+### Observing the limit
 
 The most recent response's rate-limit headers are available read-only:
 
@@ -190,8 +213,8 @@ backpressure the client already reacts to 429 and `Retry-After`.
 
 ## Beyond the wrapped methods
 
-The facade covers the same endpoints as ecosystems-go. The generated clients are exposed
-for everything else — the specs describe far more, including `/versions/lookup` (lookup by
+The methods above cover the common cases. The generated clients are exposed for
+everything else — the specs describe far more, including `/versions/lookup` (lookup by
 integrity/sha256/sha1/sha512 hash), `/keywords`, `/registries/{r}/maintainers`, all of
 `/topics` and `/hosts/**`, and issue/commit detail endpoints.
 
@@ -230,26 +253,6 @@ npm run test:integration  # integration tests (hits the live API)
 ```
 
 Set `ECOSYSTEMS_FROM` to run the integration suite against the polite pool.
-
-## Differences from ecosystems-go
-
-Deliberate, and small:
-
-| ecosystems-go | here | why |
-| --- | --- | --- |
-| `nullable.Nullable[T]` wrappers | `T \| null` | native to TypeScript |
-| `GetAllVersions` pages with no ceiling | capped at `maxPages`, throws | looks like an upstream oversight; every other paginating method in Go caps at 20 |
-| header logic duplicated for manual pagination requests | applied once in the shared fetch | Go has a test guarding the two copies against drift; one layer makes drift impossible |
-| rate-limit headers discarded | exposed as `client.rateLimit` | free information the API already sends |
-| `From` header for the polite pool | email in the User-Agent | measured: `From` alone stays anonymous (see Rate limits) |
-| `time.Time` | ISO 8601 `string` | no timezone assumptions baked in |
-| — | `client.paginate` async iterator | no memory cliff on large result sets |
-| generated clients kept private | `client.packages` … exposed | reach unwrapped endpoints without waiting for a release |
-
-Known parity gap: bulk lookup batches run sequentially and a failed batch fails the whole
-call, exactly as in Go. Bounded concurrency with partial results would be an improvement
-in both, and is written up in [FOLLOWUPS.md](FOLLOWUPS.md) along with conditional
-requests, the upstream spec PRs, and a rate-limit bug in ecosystems-go.
 
 ## License
 

@@ -18,8 +18,7 @@
   "files": [
     "dist",
     "README.md",
-    "LICENSE",
-    "FOLLOWUPS.md"
+    "LICENSE"
   ],
   "scripts": {
     "sync-specs": "node scripts/sync-specs.mjs",
