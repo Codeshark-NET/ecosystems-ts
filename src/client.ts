@@ -56,6 +56,21 @@ export interface RequestOptions {
   signal?: AbortSignal | undefined;
 }
 
+/** One bulk-lookup batch that failed, carrying its inputs so the caller can retry them. */
+export interface BulkLookupFailure {
+  /** The PURLs sent in this batch. Retry with `failures.flatMap((f) => f.purls)`. */
+  purls: string[];
+  error: EcosystemsError;
+}
+
+/** The outcome of a {@link EcosystemsClient.bulkLookup}: what resolved, and what did not. */
+export interface BulkLookupResult {
+  /** Packages that came back, keyed by the PURL the API echoed. */
+  results: Map<string, T.PackageWithRegistry>;
+  /** Empty when every batch succeeded. */
+  failures: BulkLookupFailure[];
+}
+
 interface CallResult<D> {
   data?: D | undefined;
   error?: unknown;
@@ -281,25 +296,40 @@ export class EcosystemsClient {
    * Looks up multiple packages by PURL, keyed by the PURL the API echoes back.
    *
    * Requests are batched at {@link MAX_BULK_LOOKUP_SIZE} (or the configured `batchSize`)
-   * and issued sequentially. Unmatched PURLs are simply absent from the result, which is
-   * why this returns a Map rather than an array.
+   * and issued sequentially. Unmatched PURLs are simply absent from `results`, which is
+   * why that is a Map rather than an array.
+   *
+   * A failed batch lands in `failures` with the PURLs it was carrying, rather than
+   * failing the call. **Nothing throws, even when every batch fails, so check
+   * `failures`.** An aborted `signal` is the exception: cancelling is the caller's own
+   * intent, not a failure of the service.
    *
    * NOTE that the server canonicalises: a versioned or differently-cased input comes back
    * as the package-level PURL, so `pkg:npm/lodash@4.17.21` is keyed `pkg:npm/lodash`, and
    * several inputs can collapse onto one entry. Look results up by the canonical PURL, or
    * use {@link lookup} for a single package, which sidesteps the keying entirely.
    */
-  async bulkLookup(
-    purls: string[],
-    options: RequestOptions = {},
-  ): Promise<Map<string, T.PackageWithRegistry>> {
+  async bulkLookup(purls: string[], options: RequestOptions = {}): Promise<BulkLookupResult> {
     const results = new Map<string, T.PackageWithRegistry>();
+    const failures: BulkLookupFailure[] = [];
+
     for (const batch of this.#batches(purls)) {
-      for (const pkg of await this.#bulk(batch, options.signal)) {
-        results.set(pkg.purl, pkg);
+      try {
+        for (const pkg of await this.#bulk(batch, options.signal)) {
+          results.set(pkg.purl, pkg);
+        }
+      } catch (err) {
+        // Cancellation is the caller's decision, not a batch that went wrong: surface it
+        // rather than burying it in `failures` and continuing to issue the rest.
+        if (options.signal?.aborted) throw err;
+        failures.push({
+          purls: batch,
+          error: err instanceof EcosystemsError ? err : new EcosystemsError(String(err)),
+        });
       }
     }
-    return results;
+
+    return { results, failures };
   }
 
   /**

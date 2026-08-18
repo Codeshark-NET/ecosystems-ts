@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { EcosystemsClient, MAX_BULK_LOOKUP_SIZE } from "../src/client.js";
+import {
+  EcosystemsClient,
+  type EcosystemsClientOptions,
+  MAX_BULK_LOOKUP_SIZE,
+} from "../src/client.js";
 import { EcosystemsError, looksLikeNetworkError } from "../src/errors.js";
 import {
   pathname,
@@ -22,6 +26,27 @@ async function serve(handler: Parameters<typeof startServer>[0]): Promise<string
   return server.url;
 }
 
+/** A server that answers everything with one status and no body. */
+const serveStatus = (status: number): Promise<string> =>
+  serve((_req, res) => {
+    res.writeHead(status);
+    res.end();
+  });
+
+/**
+ * A client pointed at a loopback server. Pass a URL for the common packages-only case, or
+ * a servers object for the few tests that exercise another service.
+ */
+const makeClient = (
+  servers: string | EcosystemsClientOptions["servers"],
+  options: Partial<EcosystemsClientOptions> = {},
+): EcosystemsClient =>
+  new EcosystemsClient({
+    userAgent: "test-agent/1.0",
+    servers: typeof servers === "string" ? { packages: servers } : servers,
+    ...options,
+  });
+
 afterEach(async () => {
   await Promise.all(servers.map((s) => s.close()));
   servers = [];
@@ -36,20 +61,13 @@ describe("construction", () => {
     // maxPages: 0 previously threw "pagination exceeded max pages 0" without issuing a
     // single request, unlike every other numeric option here.
     const url = await serve((_req, res) => writeJSON(res, "[]"));
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      maxPages: 0,
-      servers: { packages: url },
-    });
+    const client = makeClient(url, { maxPages: 0 });
     await expect(client.listRegistries()).resolves.toEqual([]);
     await expect(client.getAllVersions("rubygems.org", "rake")).resolves.toEqual([]);
   });
 
   it("accepts per-service server overrides", () => {
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: "https://custom.packages.server" },
-    });
+    const client = makeClient("https://custom.packages.server");
     expect(client).toBeInstanceOf(EcosystemsClient);
   });
 
@@ -68,11 +86,7 @@ describe("construction", () => {
       [MAX_BULK_LOOKUP_SIZE + 50, MAX_BULK_LOOKUP_SIZE],
     ] as const) {
       seen.length = 0;
-      const client = new EcosystemsClient({
-        userAgent: "test-agent/1.0",
-        batchSize: configured,
-        servers: { packages: url },
-      });
+      const client = makeClient(url, { batchSize: configured });
       await client.bulkLookup(Array.from({ length: 120 }, (_, i) => `pkg:npm/p${i}`));
       expect(seen[0]).toBe(expected);
     }
@@ -80,12 +94,11 @@ describe("construction", () => {
 });
 
 describe("bulkLookup", () => {
-  it("returns an empty map without hitting the network", async () => {
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: "http://127.0.0.1:1" },
-    });
-    expect((await client.bulkLookup([])).size).toBe(0);
+  it("returns an empty result without hitting the network", async () => {
+    const client = makeClient("http://127.0.0.1:1");
+    const { results, failures } = await client.bulkLookup([]);
+    expect(results.size).toBe(0);
+    expect(failures).toEqual([]);
   });
 
   // Port of TestBulkLookupBatching.
@@ -97,11 +110,7 @@ describe("bulkLookup", () => {
       writeJSON(res, "[]");
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      batchSize: 3,
-      servers: { packages: url },
-    });
+    const client = makeClient(url, { batchSize: 3 });
     await client.bulkLookup(["a", "b", "c", "d", "e", "f", "g"].map((n) => `pkg:a/${n}`));
 
     expect(batches.map((b) => b.length)).toEqual([3, 3, 1]);
@@ -119,46 +128,110 @@ describe("bulkLookup", () => {
       );
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      batchSize: 1,
-      servers: { packages: url },
-    });
-    const results = await client.bulkLookup(["pkg:npm/a", "pkg:npm/b"]);
+    const client = makeClient(url, { batchSize: 1 });
+    const { results, failures } = await client.bulkLookup(["pkg:npm/a", "pkg:npm/b"]);
 
     expect([...results.keys()].sort()).toEqual(["pkg:npm/a", "pkg:npm/b"]);
     expect(results.get("pkg:npm/a")?.name).toBe("a");
+    expect(failures).toEqual([]);
   });
 
-  // Port of TestBulkLookupHintOn429.
+  // Port of TestBulkLookupHintOn429. The hint now rides on the failure entry rather than
+  // on a thrown error, but it is the same assertion about the same message.
   it("adds a rate-limit hint on 429", async () => {
-    const url = await serve((_req, res) => {
-      res.writeHead(429);
-      res.end();
-    });
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-      retry: fastRetry,
-    });
+    const url = await serveStatus(429);
+    const client = makeClient(url, { retry: fastRetry });
 
-    await expect(client.bulkLookup(["pkg:npm/lodash"])).rejects.toThrow(/429/);
-    await expect(client.bulkLookup(["pkg:npm/lodash"])).rejects.toThrow(/rate limited/);
+    const { results, failures } = await client.bulkLookup(["pkg:npm/lodash"]);
+
+    expect(results.size).toBe(0);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.error.message).toMatch(/429/);
+    expect(failures[0]?.error.message).toMatch(/rate limited/);
+    expect(failures[0]?.error.status).toBe(429);
   });
 
   // Port of TestBulkLookupNoHintOn5xx -- 500 is not rate limiting.
   it("does not add a rate-limit hint on 500", async () => {
-    const url = await serve((_req, res) => {
-      res.writeHead(500);
-      res.end();
-    });
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-      retry: fastRetry,
+    const url = await serveStatus(500);
+    const client = makeClient(url, { retry: fastRetry });
+
+    const { failures } = await client.bulkLookup(["pkg:npm/lodash"]);
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0]?.error.message).not.toMatch(/rate limited/);
+  });
+
+  describe("partial results", () => {
+    const PURLS = ["pkg:npm/a", "pkg:npm/b", "pkg:npm/c", "pkg:npm/d"];
+
+    /** One batch per purl by default, so batch N is purl N. */
+    const client = (url: string, batchSize = 1) =>
+      makeClient(url, { batchSize, retry: fastRetry });
+
+    /** Succeeds for every batch except the nth, which 502s. */
+    const flakyServer = (failOn: number) => {
+      let call = 0;
+      return serve((_req, res) => {
+        call++;
+        if (call === failOn) {
+          res.writeHead(502);
+          res.end();
+          return;
+        }
+        writeJSON(res, `[{"purl":"pkg:npm/a${call}","name":"a${call}","ecosystem":"npm"}]`);
+      });
+    };
+
+    it("keeps the batches that succeeded when one fails", async () => {
+      const { results, failures } = await client(await flakyServer(2)).bulkLookup(
+        PURLS.slice(0, 3),
+      );
+
+      expect([...results.keys()].sort()).toEqual(["pkg:npm/a1", "pkg:npm/a3"]);
+      expect(failures).toHaveLength(1);
     });
 
-    await expect(client.bulkLookup(["pkg:npm/lodash"])).rejects.not.toThrow(/rate limited/);
+    // The point of the whole shape: a caller must be able to retry what was lost.
+    it("reports which purls were in the failed batch", async () => {
+      const { failures } = await client(await flakyServer(2), 2).bulkLookup(PURLS);
+
+      expect(failures.flatMap((f) => f.purls)).toEqual(["pkg:npm/c", "pkg:npm/d"]);
+      expect(failures[0]?.error).toBeInstanceOf(EcosystemsError);
+      expect(failures[0]?.error.status).toBe(502);
+    });
+
+    it("does not throw when every batch fails", async () => {
+      const { results, failures } = await client(await serveStatus(502)).bulkLookup(
+        PURLS.slice(0, 2),
+      );
+
+      expect(results.size).toBe(0);
+      expect(failures.flatMap((f) => f.purls)).toEqual(["pkg:npm/a", "pkg:npm/b"]);
+    });
+
+    it("collects a transport failure as a failure, not a throw", async () => {
+      // Nothing listening: the request never reaches a status code.
+      const { failures } = await client("http://127.0.0.1:1").bulkLookup(["pkg:npm/a"]);
+
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.error).toBeInstanceOf(EcosystemsError);
+      expect(failures[0]?.error.status).toBeUndefined();
+    });
+
+    // Cancelling is the caller's own intent, so it must not be reported as a bad batch.
+    it("throws rather than collecting when the caller aborts", async () => {
+      const controller = new AbortController();
+      const url = await serve((_req, res) => {
+        controller.abort();
+        res.writeHead(502);
+        res.end();
+      });
+
+      await expect(
+        client(url).bulkLookup(PURLS.slice(0, 2), { signal: controller.signal }),
+      ).rejects.toThrow();
+    });
   });
 
   // Port of TestBulkLookupNoHintOnPlain400 -- the 400 detail must survive.
@@ -166,13 +239,12 @@ describe("bulkLookup", () => {
     const url = await serve((_req, res) => {
       writeJSON(res, `{"error":"invalid purl"}`, 400);
     });
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
 
-    await expect(client.bulkLookup(["not-a-purl"])).rejects.toThrow(/invalid purl/);
-    await expect(client.bulkLookup(["not-a-purl"])).rejects.not.toThrow(/rate limited/);
+    const { failures } = await client.bulkLookup(["not-a-purl"]);
+
+    expect(failures[0]?.error.message).toMatch(/invalid purl/);
+    expect(failures[0]?.error.message).not.toMatch(/rate limited/);
   });
 
   it("finds a package looked up by a versioned purl", async () => {
@@ -181,10 +253,7 @@ describe("bulkLookup", () => {
     const url = await serve((_req, res) => {
       writeJSON(res, `[{"purl":"pkg:npm/lodash","name":"lodash","ecosystem":"npm"}]`);
     });
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
 
     expect((await client.lookup("pkg:npm/lodash@4.17.21"))?.name).toBe("lodash");
     expect(await client.lookup("pkg:npm/lodash")).not.toBeNull();
@@ -192,11 +261,18 @@ describe("bulkLookup", () => {
 
   it("still returns null when nothing matched", async () => {
     const url = await serve((_req, res) => writeJSON(res, "[]"));
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     expect(await client.lookup("pkg:npm/nope-xyz")).toBeNull();
+  });
+
+  // lookup() shares #bulk with bulkLookup, so partial results could easily have turned a
+  // failed request into a silent null here. It must stay an exception: null means
+  // "no such package", which is a different answer from "the request failed".
+  it("throws rather than returning null when the request fails", async () => {
+    const url = await serveStatus(502);
+    const client = makeClient(url, { retry: fastRetry });
+
+    await expect(client.lookup("pkg:npm/lodash")).rejects.toThrow(EcosystemsError);
   });
 
   it("sends a real POST body rather than an empty GET", async () => {
@@ -208,10 +284,7 @@ describe("bulkLookup", () => {
       writeJSON(res, "[]");
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     await client.bulkLookup(["pkg:npm/lodash"]);
 
     expect(method).toBe("POST");
@@ -243,10 +316,7 @@ describe("Link pagination", () => {
       });
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     const got = await client.lookupPackagesByRepositoryUrl("https://github.com/acme/widget", 2);
 
     expect(got.map((p) => p.purl)).toEqual(["pkg:npm/a", "pkg:npm/b"]);
@@ -270,10 +340,7 @@ describe("Link pagination", () => {
       });
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     const got = await client.getDependentPackages("npmjs.org", "lodash", 25);
 
     expect(got.length).toBe(25);
@@ -292,10 +359,7 @@ describe("Link pagination", () => {
       });
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     await expect(client.lookupPackagesByPurl("pkg:npm/a")).rejects.toThrow(/expected an array/);
   });
 
@@ -312,10 +376,7 @@ describe("Link pagination", () => {
       });
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     const got = await client.lookupPackagesByPurl("pkg:npm/a");
     expect(got.map((p) => p.purl)).toEqual(["pkg:npm/a", "pkg:npm/b"]);
   });
@@ -328,11 +389,7 @@ describe("Link pagination", () => {
       });
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-      retry: fastRetry,
-    });
+    const client = makeClient(url, { retry: fastRetry });
 
     // Previously escaped as a bare `TypeError: fetch failed`, with no hint and no status.
     const err = await client.lookupPackagesByPurl("pkg:npm/a").catch((e: unknown) => e);
@@ -349,10 +406,7 @@ describe("Link pagination", () => {
       });
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     await expect(
       client.lookupPackagesByRepositoryUrl("https://github.com/acme/widget", 0),
     ).rejects.toThrow(/pagination exceeded max pages/);
@@ -380,10 +434,7 @@ describe("Link pagination", () => {
       );
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     const got = await client.getDependentPackages("npmjs.org", "lodash", 0);
 
     expect(got.map((p) => p.purl)).toEqual(["pkg:npm/downstream-a", "pkg:npm/downstream-b"]);
@@ -404,10 +455,7 @@ describe("paginate", () => {
 
   it("yields one page at a time", async () => {
     const url = await twoPages();
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
 
     const pages: string[][] = [];
     for await (const page of client.paginate(() =>
@@ -427,10 +475,7 @@ describe("paginate", () => {
         link: `<http://${req.headers.host}/packages/lookup?page=2>; rel="next"`,
       });
     });
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
 
     for await (const _page of client.paginate(() =>
       client.packages.GET("/packages/lookup", { params: { query: { purl: "pkg:npm/a" } } }),
@@ -448,11 +493,7 @@ describe("paginate", () => {
       await new Promise((resolve) => setTimeout(resolve, 200));
       writeJSON(res, "[]");
     });
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      timeoutMs: 0,
-      servers: { packages: url },
-    });
+    const client = makeClient(url, { timeoutMs: 0 });
 
     await expect(async () => {
       for await (const _page of client.paginate(
@@ -476,11 +517,7 @@ describe("paginate", () => {
         link: `<http://${req.headers.host}/packages/lookup?page=${page}x>; rel="next"`,
       });
     });
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      maxPages: 3,
-      servers: { packages: url },
-    });
+    const client = makeClient(url, { maxPages: 3 });
 
     await expect(async () => {
       for await (const _page of client.paginate(() =>
@@ -503,10 +540,7 @@ describe("service wrappers", () => {
       );
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     const got = await client.lookupPackagesByPurl("pkg:gem/rake");
 
     expect(got).toHaveLength(1);
@@ -520,10 +554,7 @@ describe("service wrappers", () => {
       writeJSON(res, `[{"uuid":"GHSA-1","repository_url":"https://github.com/rails/rails"}]`);
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { advisories: url },
-    });
+    const client = makeClient({ advisories: url });
     const got = await client.getAdvisoriesByRepoUrl("https://github.com/rails/rails", 10);
 
     expect(got.map((a) => a.uuid)).toEqual(["GHSA-1"]);
@@ -538,10 +569,7 @@ describe("service wrappers", () => {
       writeJSON(res, `{"full_name":"acme/widget","issues_count":7}`);
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { commits: commitsUrl, issues: issuesUrl },
-    });
+    const client = makeClient({ commits: commitsUrl, issues: issuesUrl });
 
     expect(
       (await client.getCommitsSummary("https://github.com/acme/widget"))?.total_commits,
@@ -556,25 +584,15 @@ describe("service wrappers", () => {
       writeJSON(res, `{"error":"not found"}`, 404);
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     expect(await client.lookupByRegistryAndName("rubygems.org", "nope")).toBeNull();
   });
 
   // Port of TestLookupWrapperReportsStatus.
   it("reports the status code on an unexpected error", async () => {
-    const url = await serve((_req, res) => {
-      res.writeHead(500);
-      res.end();
-    });
+    const url = await serveStatus(500);
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-      retry: fastRetry,
-    });
+    const client = makeClient(url, { retry: fastRetry });
     await expect(client.lookupPackagesByPurl("pkg:npm/lodash")).rejects.toThrow(/status 500/);
   });
 
@@ -589,10 +607,7 @@ describe("service wrappers", () => {
       writeJSON(res, `[${rows.join(",")}]`);
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     const versions = await client.getAllVersions("rubygems.org", "rake");
 
     expect(versions).toHaveLength(101);
@@ -614,11 +629,7 @@ describe("transport", () => {
       writeJSON(res, "[]");
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-      retry: fastRetry,
-    });
+    const client = makeClient(url, { retry: fastRetry });
     await client.listRegistries();
 
     expect(hits).toBe(2);
@@ -631,12 +642,7 @@ describe("transport", () => {
       writeJSON(res, "[]");
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      from: "you@example.com",
-      apiKey: "secret",
-      servers: { packages: url },
-    });
+    const client = makeClient(url, { from: "you@example.com", apiKey: "secret" });
     await client.listRegistries();
 
     expect(headers["user-agent"]).toBe("test-agent/1.0 (mailto:you@example.com)");
@@ -656,10 +662,7 @@ describe("transport", () => {
       });
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      servers: { packages: url },
-    });
+    const client = makeClient(url);
     expect(client.rateLimit).toBeNull();
 
     await client.listRegistries();
@@ -683,11 +686,7 @@ describe("transport", () => {
       writeJSON(res, "[]");
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      from: "you@example.com",
-      servers: { packages: url },
-    });
+    const client = makeClient(url, { from: "you@example.com" });
     await client.listRegistries();
 
     expect(seen).toBe("/registries");
@@ -704,12 +703,7 @@ describe("transport", () => {
       writeJSON(res, "[]");
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      batchSize: 1,
-      timeoutMs: 150,
-      servers: { packages: url },
-    });
+    const client = makeClient(url, { batchSize: 1, timeoutMs: 150 });
 
     // Four batches at 60ms each is 240ms of wall clock, well past the 150ms budget that
     // a whole-operation deadline would impose.
@@ -723,12 +717,7 @@ describe("transport", () => {
       writeJSON(res, "[]");
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      timeoutMs: 50,
-      retry: false,
-      servers: { packages: url },
-    });
+    const client = makeClient(url, { timeoutMs: 50, retry: false });
 
     await expect(client.listRegistries()).rejects.toThrow();
   });
@@ -741,12 +730,7 @@ describe("transport", () => {
       writeJSON(res, "[]");
     });
 
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      batchSize: 1,
-      timeoutMs: 0,
-      servers: { packages: url },
-    });
+    const client = makeClient(url, { batchSize: 1, timeoutMs: 0 });
 
     // What a Go caller expresses with context.WithTimeout.
     await expect(
@@ -758,12 +742,8 @@ describe("transport", () => {
   });
 
   it("wraps transport failures with an actionable hint", async () => {
-    const client = new EcosystemsClient({
-      userAgent: "test-agent/1.0",
-      // Nothing is listening on port 1.
-      servers: { packages: "http://127.0.0.1:1" },
-      retry: fastRetry,
-    });
+    // Nothing is listening on port 1.
+    const client = makeClient("http://127.0.0.1:1", { retry: fastRetry });
 
     await expect(client.listRegistries()).rejects.toThrow(/rejected before a response/);
   });

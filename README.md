@@ -29,11 +29,14 @@ import { EcosystemsClient } from "@ecosyste-ms/ecosystems-ts";
 const client = new EcosystemsClient({ userAgent: "my-app/1.0" });
 
 // Bulk lookup packages by PURL
-const results = await client.bulkLookup([
+const { results, failures } = await client.bulkLookup([
   "pkg:gem/rails",
   "pkg:npm/lodash",
   "pkg:pypi/requests",
 ]);
+
+// Batches that failed, with the purls to retry
+console.log(failures.flatMap((f) => f.purls));
 
 for (const [purl, pkg] of results) {
   console.log(`${purl}: ${pkg.name} (${pkg.latest_release_number})`);
@@ -57,8 +60,9 @@ request, one package. It takes a PURL string; `lookupPurl` takes a parsed `Packa
 (see [PURL Helpers](#purl-helpers)).
 
 `bulkLookup` chunks its input at `batchSize` and sends the batches one after another, so
-5,000 PURLs is 50 round-trips. A batch that fails fails the whole call — there are no
-partial results today, so keep an eye on the size of what you hand it.
+5,000 PURLs is 50 round-trips. A failed batch does not fail the call — it lands in
+`failures` carrying its purls, so the other batches survive and you can retry the rest.
+Nothing throws when every batch fails, so check `failures`.
 
 Lookups that find nothing return `null` (or `[]` for lists) rather than throwing — "not
 found" is a normal outcome for a lookup API, not an exception.

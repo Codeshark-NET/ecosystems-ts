@@ -20,12 +20,13 @@ const client = new EcosystemsClient({
 
 describe("live API", () => {
   it("bulk looks up packages by purl", async () => {
-    const results = await client.bulkLookup([
+    const { results, failures } = await client.bulkLookup([
       "pkg:gem/rails",
       "pkg:npm/lodash",
       "pkg:pypi/requests",
     ]);
 
+    expect(failures).toEqual([]);
     expect(results.size).toBeGreaterThan(0);
 
     const rails = results.get("pkg:gem/rails");

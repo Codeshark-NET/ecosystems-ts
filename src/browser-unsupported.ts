@@ -1,15 +1,9 @@
 /**
  * Loaded instead of the real entry point when a bundler resolves the `browser` export
- * condition. Throws on import, because failing at build time beats failing silently at
- * runtime.
+ * condition, so the failure is loud at build time rather than silent at runtime.
  *
- * ecosyste.ms sends an empty `Access-Control-Expose-Headers`, so a browser lets page
- * scripts read only the six CORS-safelisted response headers. This client needs `Link`
- * to follow pagination and `x-ratelimit-*` to report quota, and neither is readable:
- * every paginating method would return the first page and report success. Chrome also
- * drops a `User-Agent` override, so `from` cannot reach the polite pool there.
- *
- * Node, Deno, Bun and Cloudflare Workers are unaffected -- CORS is a browser policy.
+ * ecosyste.ms sends an empty `Access-Control-Expose-Headers`. Node, Deno, Bun and
+ * Cloudflare Workers are unaffected -- CORS is a browser policy. See FOLLOWUPS.md §4.
  */
 throw new Error(
   "@ecosyste-ms/ecosystems-ts does not run in browsers: the ecosyste.ms API does not " +

@@ -1,4 +1,6 @@
 export {
+  type BulkLookupFailure,
+  type BulkLookupResult,
   createEcosystemsClient,
   DEFAULT_TIMEOUT_MS,
   EcosystemsClient,
