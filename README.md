@@ -14,7 +14,11 @@ dependencies:
 npm install @ecosyste-ms/ecosystems-ts
 ```
 
-Requires Node 20+, or any runtime with `fetch` (Deno, Bun, Cloudflare Workers, browsers).
+Requires Node 20+, or any server-side runtime with `fetch` (Deno, Bun, Cloudflare
+Workers).
+
+Not browsers — the API hides the headers pagination depends on from cross-origin
+scripts, so importing this in a browser build throws. Call it from your server.
 
 ## Usage
 
