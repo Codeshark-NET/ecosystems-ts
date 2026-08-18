@@ -1,4 +1,4 @@
-name: Sync OpenAPI specs
+name: Sync OpenAPI specs and registries
 
 # The ecosyste.ms specs are fetched from raw.githubusercontent.com rather than tracked by
 # a Renovate datasource, so the weekly refresh lives here instead of in renovate.json.
@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22'
+          node-version: '26'
           cache: npm
 
       - run: npm ci
@@ -29,16 +29,22 @@ jobs:
       # Spec change and regenerated types land in the same commit, never separately.
       - run: npm run sync-specs
       - run: npm run generate
+
+      # Refreshed on the same cadence, guarded by the snapshot tests in npm test below.
+      - run: npm run sync-registries
       - run: npm test
 
       - uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
-          branch: chore/sync-openapi-specs
-          title: 'chore(deps): update vendored OpenAPI specs'
-          commit-message: 'chore(deps): update vendored OpenAPI specs'
+          branch: chore/sync-upstream
+          title: 'chore(deps): update vendored OpenAPI specs and registry snapshot'
+          commit-message: 'chore(deps): update vendored OpenAPI specs and registry snapshot'
           body: |
             Automated weekly sync of the ecosyste.ms OpenAPI specs.
 
             `specs/.lock.json` records a sha256 per spec, so the diff there tells you
             which upstream services actually changed.
+
+            `src/generated/registries.ts` is refreshed from `GET /registries` in the
+            same run, so a new ecosystem or a bumped distro default arrives here too.
           labels: dependencies

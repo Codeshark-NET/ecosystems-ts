@@ -22,6 +22,7 @@
   ],
   "scripts": {
     "sync-specs": "node scripts/sync-specs.mjs",
+    "sync-registries": "node scripts/sync-registries.mjs",
     "generate": "node scripts/generate.mjs",
     "build": "tsc -p tsconfig.build.json",
     "clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true})\"",

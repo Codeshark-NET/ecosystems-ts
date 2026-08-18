@@ -85,8 +85,13 @@ const versions = await client.getAllVersionsPurl(purl);
 
 The API speaks two vocabularies: bulk lookup takes PURLs, but the per-package endpoints
 are `/registries/{registry}/packages/{name}` — and a registry name is not a PURL type.
-These helpers bridge them. The mapping is a maintained table; `client.listRegistries()`
-returns the authoritative list at runtime.
+These helpers bridge them. The mapping is generated weekly from `GET /registries` and
+covers all 51 ecosystems it serves; `client.listRegistries()` is authoritative at runtime.
+
+`purlToRegistry` returns `null` for types with no ecosyste.ms registry (`github`,
+`generic`, `oci`, `rpm`, …) rather than a name that 404s. `deb` resolves by vendor —
+`pkg:deb/ubuntu/curl` to the current Ubuntu LTS, `pkg:deb/debian/curl` to the current
+Debian stable, anything else to `null`.
 
 ## Repository Metadata
 
