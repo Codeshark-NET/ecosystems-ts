@@ -3,6 +3,17 @@
   "version": "0.1.0",
   "description": "TypeScript client library for the ecosyste.ms APIs",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ecosyste-ms/ecosystems-ts.git"
+  },
+  "homepage": "https://github.com/ecosyste-ms/ecosystems-ts#readme",
+  "bugs": {
+    "url": "https://github.com/ecosyste-ms/ecosystems-ts/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "engines": {
     "node": ">=20"
