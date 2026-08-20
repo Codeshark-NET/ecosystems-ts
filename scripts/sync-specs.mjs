@@ -6,7 +6,7 @@
 // change?" is answerable without diffing thousands of lines of YAML. (ecosystems-go's
 // vendir.lock.yml does not actually pin content.)
 import { createHash } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,8 +18,17 @@ const LOCK_FILE = path.join(SPEC_DIR, ".lock.json");
 
 const sha256 = (text) => createHash("sha256").update(text).digest("hex");
 
+async function readPreviousLock() {
+  try {
+    return JSON.parse(await readFile(LOCK_FILE, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 async function main() {
-  const lock = { fetchedAt: new Date().toISOString(), specs: {} };
+  const previous = await readPreviousLock();
+  const specs = {};
 
   for (const spec of SPECS) {
     process.stdout.write(`fetching ${spec.name} ... `);
@@ -33,9 +42,14 @@ async function main() {
     await writeFile(path.join(SPEC_DIR, `${spec.name}.yaml`), body, "utf8");
 
     const digest = sha256(body);
-    lock.specs[spec.name] = { url: spec.url, sha256: digest, bytes: body.length };
+    specs[spec.name] = { url: spec.url, sha256: digest, bytes: body.length };
     console.log(`ok (${body.length} bytes, sha256:${digest.slice(0, 12)})`);
   }
+
+  // Only bump fetchedAt when a spec actually changed, so a no-op weekly run doesn't
+  // dirty the lock file and trigger an empty PR.
+  const unchanged = previous && JSON.stringify(previous.specs) === JSON.stringify(specs);
+  const lock = { fetchedAt: unchanged ? previous.fetchedAt : new Date().toISOString(), specs };
 
   await writeFile(LOCK_FILE, `${JSON.stringify(lock, null, 2)}\n`, "utf8");
   console.log(`\nwrote ${path.relative(ROOT, LOCK_FILE)}`);
